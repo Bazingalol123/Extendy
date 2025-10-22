@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Extendy",
+  "version": "0.2.0",
+  "description": "AI companion that builds and manages your extensions.",
+  "side_panel": {
+    "default_path": "index.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": ["storage", "sidePanel", "downloads", "activeTab", "scripting"],
+  "action": {
+    "default_title": "Open Extendy"
+  },
+  "options_page": "options.html",
+  "host_permissions": [
+    "https://api.openai.com/*",
+    "https://api.anthropic.com/*"
+  ],
+  "icons": {
+    "16": "icons/icon.png",
+    "48": "icons/icon.png",
+    "128": "icons/icon.png"
+  }
+}
