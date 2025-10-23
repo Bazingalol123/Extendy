@@ -143,7 +143,7 @@ export default function OptionsApp() {
               {/* API Token Input */}
               <Input
                 label="API Token"
-                type="password"
+                type="text"
                 value={token}
                 onChange={(e) => setToken(e.target.value)}
                 placeholder="sk-..."

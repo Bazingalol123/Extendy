@@ -2,9 +2,10 @@
 export default {
   content: [
     "./index.html",
+    "./options.html",
     "./src/**/*.{js,ts,jsx,tsx}",
   ],
-  darkMode: 'class',
+  darkMode: ['class', '[data-theme="dark"]'],  // ← Support both
   theme: {
     extend: {
       colors: {
@@ -16,6 +17,8 @@ export default {
       },
       boxShadow: {
         soft: "0 2px 8px rgba(0,0,0,0.04)",
+        medium: "0 4px 16px rgba(0,0,0,0.12)",
+        strong: "0 8px 24px rgba(0,0,0,0.16)",
       },
     },
   },

@@ -19,6 +19,10 @@ export default function SidebarApp() {
     chrome.storage.local.set({ provider: p })
   }
 
+    useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+  }, [theme])
+
   const openSettings = () => {
     if (typeof chrome !== 'undefined' && chrome.runtime) {
       chrome.runtime.openOptionsPage()
@@ -59,6 +63,9 @@ export default function SidebarApp() {
             >
               <SettingsIcon className="w-4 h-4 text-gray-600 dark:text-gray-400" />
             </button>
+            <div className="bg-blue-500 text-white p-4">
+  If this is blue with white text, Tailwind works!
+</div>
           </div>
         </div>
       </header>
