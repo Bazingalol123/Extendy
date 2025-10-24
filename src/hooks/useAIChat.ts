@@ -3,57 +3,57 @@ import { createAIProvider } from '../providers/aiProvider'
 
 export interface Message {
   id: string
-  sender: 'user' | 'ai'
+  sender: 'user' | 'assistant'
   text: string
   timestamp: Date
   isStreaming?: boolean
 }
 
-/**
- * AI Chat Hook - Unified hook for all AI providers
- * @param provider - Provider name ('openai', 'anthropic', 'ollama', 'mock')
- * @param apiKey - API key or endpoint URL
- */
 export function useAIChat(provider: string, apiKey: string) {
   const [messages, setMessages] = useState<Message[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null)
 
-  const sendMessage = useCallback(async (text: string, useStreaming = true) => {
-    if (!text.trim()) return
+  const sendMessage = useCallback(async (text: string, useStreaming: boolean = true) => {
+    if (!apiKey) {
+      console.error('No API key provided')
+      return
+    }
 
     // Add user message
     const userMessage: Message = {
       id: Date.now().toString(),
       sender: 'user',
-      text: text.trim(),
+      text,
       timestamp: new Date()
     }
     setMessages(prev => [...prev, userMessage])
     setIsLoading(true)
 
     try {
-      const aiProvider = createAIProvider(provider, apiKey)
-      const aiMessageId = (Date.now() + 1).toString()
+      const ai = createAIProvider(provider, apiKey)
 
       if (useStreaming) {
-        // Create streaming message placeholder
-        const aiMessage: Message = {
-          id: aiMessageId,
-          sender: 'ai',
+        // Create placeholder for streaming message
+        const assistantId = (Date.now() + 1).toString()
+        const assistantMessage: Message = {
+          id: assistantId,
+          sender: 'assistant',
           text: '',
           timestamp: new Date(),
           isStreaming: true
         }
-        setMessages(prev => [...prev, aiMessage])
-        setStreamingMessageId(aiMessageId)
+        setMessages(prev => [...prev, assistantMessage])
+        setStreamingMessageId(assistantId)
 
-        // Stream the response
-        await aiProvider.streamReply(text, (chunk) => {
+        // Stream response
+        let fullText = ''
+        await ai.streamReply(text, (chunk) => {
+          fullText += chunk
           setMessages(prev => 
             prev.map(msg => 
-              msg.id === aiMessageId
-                ? { ...msg, text: msg.text + chunk }
+              msg.id === assistantId 
+                ? { ...msg, text: fullText, isStreaming: true }
                 : msg
             )
           )
@@ -62,7 +62,7 @@ export function useAIChat(provider: string, apiKey: string) {
         // Mark streaming as complete
         setMessages(prev =>
           prev.map(msg =>
-            msg.id === aiMessageId
+            msg.id === assistantId
               ? { ...msg, isStreaming: false }
               : msg
           )
@@ -70,25 +70,24 @@ export function useAIChat(provider: string, apiKey: string) {
         setStreamingMessageId(null)
       } else {
         // Non-streaming response
-        const response = await aiProvider.reply(text)
-        const aiMessage: Message = {
-          id: aiMessageId,
-          sender: 'ai',
+        const response = await ai.reply(text)
+        const assistantMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          sender: 'assistant',
           text: response,
           timestamp: new Date()
         }
-        setMessages(prev => [...prev, aiMessage])
+        setMessages(prev => [...prev, assistantMessage])
       }
     } catch (error) {
       console.error('AI error:', error)
       const errorMessage: Message = {
         id: (Date.now() + 1).toString(),
-        sender: 'ai',
-        text: 'Sorry, I encountered an error. Please check your API key and try again.',
+        sender: 'assistant',
+        text: `❌ Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
         timestamp: new Date()
       }
       setMessages(prev => [...prev, errorMessage])
-      setStreamingMessageId(null)
     } finally {
       setIsLoading(false)
     }
@@ -96,7 +95,6 @@ export function useAIChat(provider: string, apiKey: string) {
 
   const clearMessages = useCallback(() => {
     setMessages([])
-    setStreamingMessageId(null)
   }, [])
 
   return {

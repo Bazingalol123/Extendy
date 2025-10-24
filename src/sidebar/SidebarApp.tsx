@@ -1,82 +1,132 @@
-import { useState, useEffect } from 'react'
-import { SettingsIcon, MoonIcon, SunIcon } from '../components/Icons'
-import ChatBoxWithAI from '../components/ChatBoxWithAI'
-import { useTheme } from '../hooks/useTheme'
-import { DEFAULT_PROVIDER } from '../config/providers'
+import { useState, useRef, useEffect } from 'react'
+import { createAIProvider } from '../providers/aiProvider'
+
+interface Message {
+  role: 'user' | 'assistant'
+  content: string
+}
 
 export default function SidebarApp() {
-  const [provider, setProvider] = useState(DEFAULT_PROVIDER)
-  const { theme, toggleTheme } = useTheme()
+  const [messages, setMessages] = useState<Message[]>([])
+  const [input, setInput] = useState('')
+  const [isStreaming, setIsStreaming] = useState(false)
+  const [currentStreamText, setCurrentStreamText] = useState('')
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+
+  // Get provider from storage
+  const [provider, setProvider] = useState<ReturnType<typeof createAIProvider> | null>(null)
 
   useEffect(() => {
-    chrome.storage.local.get(['provider'], (res) => {
-      if (res?.provider) setProvider(res.provider)
+    // Load provider from chrome.storage
+    chrome.storage.local.get(['selectedProvider', 'apiKey'], (result) => {
+      if (result.apiKey && result.selectedProvider) {
+        const aiProvider = createAIProvider(result.selectedProvider, result.apiKey)
+        setProvider(aiProvider)
+      }
     })
   }, [])
 
-  const handleProviderChange = (p: string) => {
-    setProvider(p)
-    chrome.storage.local.set({ provider: p })
-  }
+  // Auto-scroll to bottom
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages, currentStreamText])
 
-    useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme)
-  }, [theme])
+  const handleSend = async () => {
+    if (!input.trim() || !provider || isStreaming) return
 
-  const openSettings = () => {
-    if (typeof chrome !== 'undefined' && chrome.runtime) {
-      chrome.runtime.openOptionsPage()
-    } else {
-      // Dev mode fallback
-      window.open('/options.html', '_blank')
+    const userMessage: Message = { role: 'user', content: input }
+    setMessages(prev => [...prev, userMessage])
+    setInput('')
+    setIsStreaming(true)
+    setCurrentStreamText('')
+
+    try {
+      // Stream the response
+      await provider.streamReply(input, (chunk) => {
+        setCurrentStreamText(prev => prev + chunk)
+      })
+
+      // Once complete, add to messages
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: currentStreamText
+      }])
+      setCurrentStreamText('')
+    } catch (error) {
+      console.error('Streaming error:', error)
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: '❌ Error: Failed to get response'
+      }])
+    } finally {
+      setIsStreaming(false)
     }
   }
 
   return (
-    <div className="h-screen w-full flex flex-col bg-white dark:bg-gray-950">
-      {/* MINIMAL HEADER */}
-      <header className="flex-shrink-0 border-b border-gray-200 dark:border-gray-800">
-        <div className="flex items-center justify-between px-4 py-3">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center text-lg flex-shrink-0">
-              🤖
-            </div>
-            <span className="text-base font-semibold text-gray-900 dark:text-gray-100">Extendy</span>
-          </div>
-          
-          <div className="flex items-center gap-1">
-            <button
-              onClick={toggleTheme}
-              className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
-              title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
-            >
-              {theme === 'light' ? (
-                <MoonIcon className="w-4 h-4 text-gray-600 dark:text-gray-400" />
-              ) : (
-                <SunIcon className="w-4 h-4 text-gray-600 dark:text-gray-400" />
-              )}
-            </button>
-            <button
-              onClick={openSettings}
-              className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
-              title="Open Settings"
-            >
-              <SettingsIcon className="w-4 h-4 text-gray-600 dark:text-gray-400" />
-            </button>
-            <div className="bg-blue-500 text-white p-4">
-  If this is blue with white text, Tailwind works!
-</div>
-          </div>
-        </div>
-      </header>
+    <div className="flex flex-col h-screen bg-gray-50 dark:bg-gray-900">
+      {/* Header */}
+      <div className="bg-gradient-to-r from-blue-500 to-purple-600 text-white p-4 shadow-lg">
+        <h1 className="text-xl font-bold">⚡ Extendy</h1>
+        <p className="text-sm opacity-90">AI Extension Builder</p>
+      </div>
 
-      {/* MAIN CHAT AREA - Full Height */}
-      <main className="flex-1 overflow-hidden">
-        <ChatBoxWithAI 
-          currentProvider={provider}
-          onProviderChange={handleProviderChange}
-        />
-      </main>
+      {/* Messages */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {messages.map((msg, idx) => (
+          <div
+            key={idx}
+            className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+          >
+            <div
+              className={`max-w-[80%] rounded-lg px-4 py-2 ${
+                msg.role === 'user'
+                  ? 'bg-blue-500 text-white'
+                  : 'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 shadow'
+              }`}
+            >
+              {msg.content}
+            </div>
+          </div>
+        ))}
+
+        {/* Streaming message */}
+        {isStreaming && currentStreamText && (
+          <div className="flex justify-start">
+            <div className="max-w-[80%] rounded-lg px-4 py-2 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 shadow">
+              {currentStreamText}
+              <span className="inline-block w-2 h-4 ml-1 bg-blue-500 animate-pulse" />
+            </div>
+          </div>
+        )}
+
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* Input */}
+      <div className="border-t border-gray-200 dark:border-gray-700 p-4 bg-white dark:bg-gray-800">
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyPress={(e) => e.key === 'Enter' && handleSend()}
+            placeholder="Ask AI to build an extension..."
+            disabled={isStreaming}
+            className="flex-1 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg 
+                     bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100
+                     focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <button
+            onClick={handleSend}
+            disabled={isStreaming || !input.trim()}
+            className="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 
+                     disabled:opacity-50 disabled:cursor-not-allowed transition"
+          >
+            {isStreaming ? '⏳' : '→'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
