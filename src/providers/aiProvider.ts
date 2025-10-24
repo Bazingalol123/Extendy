@@ -17,6 +17,17 @@ export interface AIProvider {
     onChunk: (text: string) => void,
     model?: string
   ) => Promise<void>
+  streamReplyWithEvents?: (
+    prompt: string,
+    handlers: {
+      onTextDelta?: (text: string) => void
+      onToolStart?: (e: { id: string; name: string; args: any }) => void
+      onToolResult?: (e: { id: string; name: string; result: any }) => void
+      onToolError?: (e: { id: string; name: string; error: string }) => void
+      onEnd?: (e?: { finalText?: string }) => void
+    },
+    model?: string
+  ) => Promise<void>
 }
 
 /**
@@ -89,6 +100,150 @@ const extensionTools = {
         : { success: false, error: `File not found: ${path}` }
     }
   })
+}
+
+/**
+ * Evented tools builder to surface tool-call lifecycle to UI
+ */
+const __makeToolEventId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+
+type ToolEventHandlers = {
+  onToolStart?: (e: { id: string; name: string; args: any }) => void
+  onToolResult?: (e: { id: string; name: string; result: any }) => void
+  onToolError?: (e: { id: string; name: string; error: string }) => void
+}
+
+function buildEventedTools(handlers: ToolEventHandlers) {
+  const h = handlers || {}
+  return {
+    createFile: tool({
+      description: 'Create a new file in the extension project',
+      inputSchema: z.object({
+        path: z.string().describe('File path relative to extension root (e.g., "manifest.json", "popup/index.html")'),
+        content: z.string().describe('Complete file content')
+      }),
+      execute: async ({ path, content }: { path: string; content: string}) => {
+        const id = __makeToolEventId()
+        console.log('🔧 Tool called: create_file', { path })
+        h.onToolStart?.({ id, name: 'createFile', args: { path, contentPreview: `${content}`.slice(0, 64) } })
+        try {
+          const file = fileSystem.createFile(path, content)
+          const result = { success: true, path: file.path, message: `Created ${path}` }
+          h.onToolResult?.({ id, name: 'createFile', result })
+          return result
+        } catch (err) {
+          const error = err instanceof Error ? err.message : String(err)
+          h.onToolError?.({ id, name: 'createFile', error })
+          return { success: false, error }
+        }
+      }
+    }),
+
+    update_file: tool({
+      description: 'Update an existing file in the extension',
+      inputSchema: z.object({
+        path: z.string().describe('File path to update'),
+        content: z.string().describe('New file content')
+      }),
+      execute: async ({ path, content }: { path: string; content: string }) => {
+        const id = __makeToolEventId()
+        console.log('🔧 Tool called: update_file', { path })
+        h.onToolStart?.({ id, name: 'update_file', args: { path, contentPreview: `${content}`.slice(0, 64) } })
+        try {
+          const file = fileSystem.updateFile(path, content)
+          const result = file
+            ? { success: true, path, message: `Updated ${path}` }
+            : { success: false, error: `File not found: ${path}` }
+          if ((result as any).success) {
+            h.onToolResult?.({ id, name: 'update_file', result })
+          } else {
+            h.onToolError?.({ id, name: 'update_file', error: (result as any).error })
+          }
+          return result
+        } catch (err) {
+          const error = err instanceof Error ? err.message : String(err)
+          h.onToolError?.({ id, name: 'update_file', error })
+          return { success: false, error }
+        }
+      }
+    }),
+
+    read_file: tool({
+      description: 'Read the contents of an existing file',
+      inputSchema: z.object({
+        path: z.string().describe('File path to read')
+      }),
+      execute: async ({ path }: { path: string }) => {
+        const id = __makeToolEventId()
+        console.log('🔧 Tool called: read_file', { path })
+        h.onToolStart?.({ id, name: 'read_file', args: { path } })
+        try {
+          const file = fileSystem.getFile(path)
+          const result = file
+            ? { success: true, path, content: file.content }
+            : { success: false, error: `File not found: ${path}` }
+          if ((result as any).success) {
+            h.onToolResult?.({ id, name: 'read_file', result: { path, contentPreview: `${(result as any).content ?? ''}`.slice(0, 64) } })
+          } else {
+            h.onToolError?.({ id, name: 'read_file', error: (result as any).error })
+          }
+          return result
+        } catch (err) {
+          const error = err instanceof Error ? err.message : String(err)
+          h.onToolError?.({ id, name: 'read_file', error })
+          return { success: false, error }
+        }
+      }
+    }),
+
+    list_files: tool({
+      description: 'List all files in the current extension project',
+      inputSchema: z.object({}),
+      execute: async () => {
+        const id = __makeToolEventId()
+        console.log('🔧 Tool called: list_files')
+        h.onToolStart?.({ id, name: 'list_files', args: {} })
+        try {
+          const files = fileSystem.getAllFiles().map(f => ({ path: f.path, type: f.type }))
+          const result = { files, count: files.length }
+          h.onToolResult?.({ id, name: 'list_files', result: { count: files.length } })
+          return result
+        } catch (err) {
+          const error = err instanceof Error ? err.message : String(err)
+          h.onToolError?.({ id, name: 'list_files', error })
+          return { success: false, error }
+        }
+      }
+    }),
+
+    delete_file: tool({
+      description: 'Delete a file from the extension project',
+      inputSchema: z.object({
+        path: z.string().describe('File path to delete')
+      }),
+      execute: async ({ path }: { path: string }) => {
+        const id = __makeToolEventId()
+        console.log('🔧 Tool called: delete_file', { path })
+        h.onToolStart?.({ id, name: 'delete_file', args: { path } })
+        try {
+          const deleted = fileSystem.deleteFile(path)
+          const result = deleted
+            ? { success: true, message: `Deleted ${path}` }
+            : { success: false, error: `File not found: ${path}` }
+          if ((result as any).success) {
+            h.onToolResult?.({ id, name: 'delete_file', result })
+          } else {
+            h.onToolError?.({ id, name: 'delete_file', error: (result as any).error })
+          }
+          return result
+        } catch (err) {
+          const error = err instanceof Error ? err.message : String(err)
+          h.onToolError?.({ id, name: 'delete_file', error })
+          return { success: false, error }
+        }
+      }
+    })
+  }
 }
 
 /**
@@ -232,6 +387,36 @@ function createOpenAIImpl(apiKey: string, defaultModel: string): AIProvider {
       for await (const chunk of textStream) {
         onChunk(chunk)
       }
+    },
+
+    async streamReplyWithEvents(
+      prompt: string,
+      handlers: {
+        onTextDelta?: (text: string) => void
+        onToolStart?: (e: { id: string; name: string; args: any }) => void
+        onToolResult?: (e: { id: string; name: string; result: any }) => void
+        onToolError?: (e: { id: string; name: string; error: string }) => void
+        onEnd?: (e?: { finalText?: string }) => void
+      },
+      model = defaultModel
+    ) {
+      const { textStream } = streamText({
+        model: openai(model),
+        system: EXTENSION_BUILDER_PROMPT,
+        prompt,
+        tools: buildEventedTools({
+          onToolStart: handlers?.onToolStart,
+          onToolResult: handlers?.onToolResult,
+          onToolError: handlers?.onToolError
+        }),
+        stopWhen: stepCountIs(5),
+        temperature: 0.7
+      })
+
+      for await (const chunk of textStream) {
+        handlers?.onTextDelta?.(chunk)
+      }
+      handlers?.onEnd?.({})
     }
   }
 }
@@ -277,6 +462,36 @@ function createAnthropicImpl(apiKey: string, defaultModel: string): AIProvider {
       for await (const chunk of textStream) {
         onChunk(chunk)
       }
+    },
+
+    async streamReplyWithEvents(
+      prompt: string,
+      handlers: {
+        onTextDelta?: (text: string) => void
+        onToolStart?: (e: { id: string; name: string; args: any }) => void
+        onToolResult?: (e: { id: string; name: string; result: any }) => void
+        onToolError?: (e: { id: string; name: string; error: string }) => void
+        onEnd?: (e?: { finalText?: string }) => void
+      },
+      model = defaultModel
+    ) {
+      const { textStream } = streamText({
+        model: anthropic(model),
+        system: EXTENSION_BUILDER_PROMPT,
+        prompt,
+        tools: buildEventedTools({
+          onToolStart: handlers?.onToolStart,
+          onToolResult: handlers?.onToolResult,
+          onToolError: handlers?.onToolError
+        }),
+        stopWhen: stepCountIs(5),
+        temperature: 0.7
+      })
+
+      for await (const chunk of textStream) {
+        handlers?.onTextDelta?.(chunk)
+      }
+      handlers?.onEnd?.({})
     }
   }
 }
