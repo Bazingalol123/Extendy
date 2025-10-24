@@ -8,20 +8,34 @@ export default function SidebarApp() {
   const [provider, setProvider] = useState(DEFAULT_PROVIDER)
   const { theme, toggleTheme } = useTheme()
 
+  // Load provider from storage on mount
   useEffect(() => {
     chrome.storage.local.get(['provider'], (res) => {
       if (res?.provider) setProvider(res.provider)
     })
+
+    // Listen for provider changes from settings page
+    const handleStorageChange = (
+      changes: { [key: string]: chrome.storage.StorageChange },
+      areaName: string
+    ) => {
+      if (areaName === 'local' && changes.provider) {
+        setProvider(changes.provider.newValue)
+      }
+    }
+
+    chrome.storage.onChanged.addListener(handleStorageChange)
+
+    // Cleanup listener on unmount
+    return () => {
+      chrome.storage.onChanged.removeListener(handleStorageChange)
+    }
   }, [])
 
   const handleProviderChange = (p: string) => {
     setProvider(p)
     chrome.storage.local.set({ provider: p })
   }
-
-    useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme)
-  }, [theme])
 
   const openSettings = () => {
     if (typeof chrome !== 'undefined' && chrome.runtime) {
@@ -34,14 +48,16 @@ export default function SidebarApp() {
 
   return (
     <div className="h-screen w-full flex flex-col bg-white dark:bg-gray-950">
-      {/* MINIMAL HEADER */}
+      {/* HEADER */}
       <header className="flex-shrink-0 border-b border-gray-200 dark:border-gray-800">
         <div className="flex items-center justify-between px-4 py-3">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center text-lg flex-shrink-0">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-600 to-purple-600 dark:from-cyan-600 dark:to-blue-600 flex items-center justify-center text-lg flex-shrink-0">
               🤖
             </div>
-            <span className="text-base font-semibold text-gray-900 dark:text-gray-100">Extendy</span>
+            <span className="text-base font-semibold text-gray-900 dark:text-gray-100">
+              Extendy
+            </span>
           </div>
           
           <div className="flex items-center gap-1">
@@ -63,15 +79,12 @@ export default function SidebarApp() {
             >
               <SettingsIcon className="w-4 h-4 text-gray-600 dark:text-gray-400" />
             </button>
-            <div className="bg-blue-500 text-white p-4">
-  If this is blue with white text, Tailwind works!
-</div>
           </div>
         </div>
       </header>
 
-      {/* MAIN CHAT AREA - Full Height */}
-      <main className="flex-1 overflow-hidden">
+      {/* MAIN CHAT AREA */}
+      <main className="flex-1 overflow-hidden bg-gray-50 dark:bg-gray-950">
         <ChatBoxWithAI 
           currentProvider={provider}
           onProviderChange={handleProviderChange}
