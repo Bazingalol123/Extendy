@@ -1,6 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import OptionsApp from './OptionsApp'
+import ErrorBoundary from '../components/ErrorBoundary'
 import '../styles.css'
 
 // Initialize theme immediately before React renders
@@ -22,9 +23,14 @@ initializeTheme()
 
 const root = document.getElementById('root')
 if (root) {
-  ReactDOM.createRoot(root).render(
+  const rootApi = ReactDOM.createRoot(root)
+  rootApi.render(
     <React.StrictMode>
-      <OptionsApp />
+      <ErrorBoundary fallbackTitle="Options crashed">
+        <OptionsApp />
+      </ErrorBoundary>
     </React.StrictMode>
   )
+  console.info("[SMOKE] Options mounted")
+  console.debug("[SMOKE] env", { mode: (typeof import.meta !== "undefined" ? (import.meta as any)?.env?.MODE : undefined) })
 }

@@ -1,5 +1,6 @@
-import React from 'react'
+import React, { useEffect, useState, useMemo } from 'react'
 import { SettingsIcon } from '../components/Icons'
+import { fileSystem, on as fsOn } from '../services/fileSystem'
 
 interface HeaderProps {
   title?: string
@@ -27,6 +28,53 @@ export default function Header({
   onNewChatClick,
   className = ''
 }: HeaderProps) {
+  const [activeName, setActiveName] = useState<string | null>(() => {
+    const id = fileSystem.getActiveProjectId()
+    if (!id) return null
+    const p = fileSystem.getProjectList().find(x => x.id === id)
+    return p?.name ?? null
+  })
+
+  // Keep the active project name in sync with FileSystem events
+  useEffect(() => {
+    // initial sync
+    const id = fileSystem.getActiveProjectId()
+    if (id) {
+      const p = fileSystem.getProjectList().find(x => x.id === id)
+      setActiveName(p?.name ?? null)
+    } else {
+      setActiveName(null)
+    }
+
+    const offActive = fsOn('project:activeChanged', ({ projectId }) => {
+      if (!projectId) {
+        setActiveName(null)
+        return
+      }
+      const p = fileSystem.getProjectList().find(x => x.id === projectId)
+      setActiveName(p?.name ?? null)
+    })
+
+    const offList = fsOn('project:listChanged', () => {
+      const cur = fileSystem.getActiveProjectId()
+      if (!cur) {
+        setActiveName(null)
+        return
+      }
+      const p = fileSystem.getProjectList().find(x => x.id === cur)
+      setActiveName(p?.name ?? null)
+    })
+
+    return () => {
+      offActive?.()
+      offList?.()
+    }
+  }, [])
+
+  const titleWithProject = useMemo(() => {
+    return activeName ? `${title} — ${activeName}` : title
+  }, [title, activeName])
+
   return (
     <header className={`
       flex items-center justify-between
@@ -39,7 +87,7 @@ export default function Header({
       <div className="flex items-center gap-2">
         <div className="w-2 h-2 rounded-full bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.6)] animate-pulse" />
         <h1 className="text-base font-medium text-white">
-          {title}
+          {titleWithProject}
         </h1>
       </div>
 

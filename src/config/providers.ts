@@ -93,7 +93,7 @@ export const PROVIDERS: Record<string, ProviderConfig> = {
   }
 }
 
-export const DEFAULT_PROVIDER = 'googleGemini'
+export const DEFAULT_PROVIDER = 'openai'
 export const AVAILABLE_PROVIDERS = Object.keys(PROVIDERS).filter(p => p !== 'mock')
 
 /**

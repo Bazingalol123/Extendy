@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Extendy",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "AI companion that builds and manages your extensions.",
   "side_panel": {
     "default_path": "index.html"
@@ -17,6 +17,15 @@
   "host_permissions": [
     "https://api.openai.com/*",
     "https://api.anthropic.com/*"
+  ],
+  "sandbox": {
+    "pages": ["sandbox.html"]
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["sandbox.html", "assets/*"],
+      "matches": ["<all_urls>"]
+    }
   ],
   "icons": {
     "16": "icons/icon.png",
