@@ -5,17 +5,167 @@ import { z } from 'zod'
 import { PROVIDERS } from '../config/providers'
 import { fileSystem } from '../services/fileSystem'
 
+import { storageV2 } from '../utils/storageV2'
+
+/**
+ * Storage keys for provider configuration
+ */
+export type ProviderId = 'openai' | 'anthropic'
+export const KEY_ACTIVE_PROVIDER = 'ai:activeProvider'
+export const KEY_OPENAI_API_KEY = 'ai:key:openai'
+export const KEY_ANTHROPIC_API_KEY = 'ai:key:anthropic'
+
+/**
+ * Lightweight chat message type for provider layer
+ */
+export type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string }
+
+export interface SendChatOptions {
+  signal?: AbortSignal
+  model?: string
+}
+
+/**
+ * Return the active AI provider. Defaults to 'openai' if unset or invalid.
+ */
+export async function getActiveProvider(): Promise<ProviderId> {
+  const raw = await storageV2.idbKvGet(KEY_ACTIVE_PROVIDER)
+  return raw === 'anthropic' ? 'anthropic' : 'openai'
+}
+
+/**
+ * Set the active AI provider id.
+ */
+export async function setActiveProvider(id: ProviderId): Promise<void> {
+  await storageV2.idbKvSet(KEY_ACTIVE_PROVIDER, id)
+}
+
+/**
+ * Get the API key for a provider, or null if unset/empty.
+ */
+export async function getApiKey(id: ProviderId): Promise<string | null> {
+  const keyName = id === 'anthropic' ? KEY_ANTHROPIC_API_KEY : KEY_OPENAI_API_KEY
+  const val = await storageV2.idbKvGet(keyName)
+  return typeof val === 'string' && val.trim() ? val : null
+}
+
+/**
+ * Persist an API key for a provider (stores empty string when clearing).
+ */
+export async function setApiKey(id: ProviderId, key: string): Promise<void> {
+  const keyName = id === 'anthropic' ? KEY_ANTHROPIC_API_KEY : KEY_OPENAI_API_KEY
+  await storageV2.idbKvSet(keyName, key || '')
+}
+
+// Minimal API response types
+type OpenAIChatResponse = {
+  choices: Array<{ message: { content: string | null } }>
+  error?: { message?: string }
+}
+
+type AnthropicMessageBlock = { type: string; text?: string }
+type AnthropicChatResponse = {
+  content: AnthropicMessageBlock[]
+  error?: { message?: string }
+}
+
+/**
+ * Send a chat request using the currently active provider.
+ * - Throws { code: 'NO_API_KEY', provider } if no key exists for the active provider.
+ * - Uses fetch only, no SDKs, and no streaming.
+ */
+export async function sendChat(messages: ChatMessage[], options: SendChatOptions = {}): Promise<{ text: string }> {
+  const provider = await getActiveProvider()
+  const key = await getApiKey(provider)
+  if (!key) {
+    const err: any = new Error(`Missing API key for provider "${provider}"`)
+    err.code = 'NO_API_KEY'
+    err.provider = provider
+    throw err
+  }
+
+  if (provider === 'openai') {
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${key}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: options.model ?? 'gpt-4o-mini',
+        messages: messages.map(m => ({ role: m.role, content: m.content })),
+        temperature: 0.2,
+      }),
+      signal: options.signal,
+    })
+
+    let data: OpenAIChatResponse
+    try {
+      data = await res.json()
+    } catch {
+      throw new Error(`OpenAI: invalid JSON response (${res.status})`)
+    }
+    if (!res.ok || (data as any).error) {
+      const msg =
+        ((data as any).error && ((data as any).error.message || String((data as any).error))) ||
+        `OpenAI HTTP ${res.status}`
+      throw new Error(msg)
+    }
+    const content = data.choices?.[0]?.message?.content ?? ''
+    return { text: content || '' }
+  }
+
+  // Anthropic
+  const anthroMessages = messages.map(m => ({
+    role: m.role === 'assistant' ? 'assistant' : 'user',
+    content: m.content,
+  }))
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': key,
+      'anthropic-version': '2023-06-01',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: options.model ?? 'claude-3-5-sonnet-latest',
+      max_tokens: 512,
+      messages: anthroMessages,
+    }),
+    signal: options.signal,
+  })
+
+  let data: AnthropicChatResponse
+  try {
+    data = await res.json()
+  } catch {
+    throw new Error(`Anthropic: invalid JSON response (${res.status})`)
+  }
+  if (!res.ok || (data as any).error) {
+    const msg =
+      ((data as any).error && ((data as any).error.message || String((data as any).error))) ||
+      `Anthropic HTTP ${res.status}`
+    throw new Error(msg)
+  }
+  const text = (data.content || [])
+    .map(b => (b.type === 'text' ? b.text ?? '' : ''))
+    .join('')
+  return { text }
+}
 /**
  * Unified AI Provider Interface
  * Single file for all AI provider implementations with tools support
  */
 
+export type ChatTurn = { role: 'system' | 'user' | 'assistant'; content: string }
+
 export interface AIProvider {
-  reply: (prompt: string, model?: string) => Promise<string>
+  reply: (prompt: string, model?: string, history?: ChatTurn[]) => Promise<string>
   streamReply: (
     prompt: string,
     onChunk: (text: string) => void,
-    model?: string
+    model?: string,
+    history?: ChatTurn[]
   ) => Promise<void>
   streamReplyWithEvents?: (
     prompt: string,
@@ -26,7 +176,8 @@ export interface AIProvider {
       onToolError?: (e: { id: string; name: string; error: string }) => void
       onEnd?: (e?: { finalText?: string }) => void
     },
-    model?: string
+    model?: string,
+    history?: ChatTurn[]
   ) => Promise<void>
 }
 
@@ -48,6 +199,20 @@ const extensionTools = {
     }
   }),
 
+  // Alias to support prompts that call "create_file"
+  create_file: tool({
+    description: 'Create a new file in the extension project',
+    inputSchema: z.object({
+      path: z.string().describe('File path relative to extension root (e.g., "manifest.json", "popup/index.html")'),
+      content: z.string().describe('Complete file content')
+    }),
+    execute: async ({ path, content }: { path: string; content: string}) => {
+      console.log('🔧 Tool called: create_file (alias)', { path })
+      const file = fileSystem.createFile(path, content)
+      return { success: true, path: file.path, message: `Created ${path}` }
+    }
+  }),
+
   update_file: tool({
     description: 'Update an existing file in the extension',
     inputSchema: z.object({
@@ -57,7 +222,7 @@ const extensionTools = {
     execute: async ({ path, content }: { path: string; content: string }) => {
       console.log('🔧 Tool called: update_file', { path })
       const file = fileSystem.updateFile(path, content)
-      return file 
+      return file
         ? { success: true, path, message: `Updated ${path}` }
         : { success: false, error: `File not found: ${path}` }
     }
@@ -134,6 +299,30 @@ function buildEventedTools(handlers: ToolEventHandlers) {
         } catch (err) {
           const error = err instanceof Error ? err.message : String(err)
           h.onToolError?.({ id, name: 'createFile', error })
+          return { success: false, error }
+        }
+      }
+    }),
+
+    // Alias to support prompts that call "create_file"
+    create_file: tool({
+      description: 'Create a new file in the extension project',
+      inputSchema: z.object({
+        path: z.string().describe('File path relative to extension root (e.g., "manifest.json", "popup/index.html")'),
+        content: z.string().describe('Complete file content')
+      }),
+      execute: async ({ path, content }: { path: string; content: string}) => {
+        const id = __makeToolEventId()
+        console.log('🔧 Tool called: create_file (alias)', { path })
+        h.onToolStart?.({ id, name: 'create_file', args: { path, contentPreview: `${content}`.slice(0, 64) } })
+        try {
+          const file = fileSystem.createFile(path, content)
+          const result = { success: true, path: file.path, message: `Created ${path}` }
+          h.onToolResult?.({ id, name: 'create_file', result })
+          return result
+        } catch (err) {
+          const error = err instanceof Error ? err.message : String(err)
+          h.onToolError?.({ id, name: 'create_file', error })
           return { success: false, error }
         }
       }
@@ -353,18 +542,29 @@ export function createAIProvider(provider: string, apiKey: string): AIProvider {
 function createOpenAIImpl(apiKey: string, defaultModel: string): AIProvider {
   const openai = createOpenAI({ apiKey })
 
+  const buildMessages = (history: ChatTurn[] | undefined, userText: string) => {
+    const msgs = (history && history.length ? history : []).slice()
+    msgs.push({ role: 'user', content: userText })
+    return msgs
+  }
+
   return {
-    async reply(prompt: string, model = defaultModel) {
-      const { text, toolCalls } = await generateText({
+    async reply(prompt: string, model = defaultModel, history?: ChatTurn[]) {
+      const base = {
         model: openai(model),
         system: EXTENSION_BUILDER_PROMPT,
-        prompt,
         tools: extensionTools,
-        stopWhen: stepCountIs(5), // ← AI SDK 5: Allow up to 5 tool calling steps
-        temperature: 0.7
-      })
+        stopWhen: stepCountIs(5),
+        temperature: 0.7,
+      } as const
+
+      const hasHistory = !!(history && history.length)
+      const req = hasHistory
+        ? { ...base, messages: buildMessages(history, prompt) }
+        : { ...base, prompt }
+
+      const { text, toolCalls } = await generateText(req as any)
       
-      // Log tool activity for debugging
       if (toolCalls && toolCalls.length > 0) {
         console.log(`✅ Tool calls completed: ${toolCalls.length} calls`)
         console.log('📝 Final text response:', text)
@@ -373,17 +573,22 @@ function createOpenAIImpl(apiKey: string, defaultModel: string): AIProvider {
       return text
     },
 
-    async streamReply(prompt: string, onChunk: (text: string) => void, model = defaultModel) {
-      const { textStream } = streamText({
+    async streamReply(prompt: string, onChunk: (text: string) => void, model = defaultModel, history?: ChatTurn[]) {
+      const base = {
         model: openai(model),
         system: EXTENSION_BUILDER_PROMPT,
-        prompt,
         tools: extensionTools,
-        stopWhen: stepCountIs(5), // ← AI SDK 5: Allow up to 5 tool calling steps
-        temperature: 0.7
-      })
+        stopWhen: stepCountIs(5),
+        temperature: 0.7,
+      } as const
 
-      // Stream text parts only
+      const hasHistory = !!(history && history.length)
+      const req = hasHistory
+        ? { ...base, messages: buildMessages(history, prompt) }
+        : { ...base, prompt }
+
+      const { textStream } = streamText(req as any)
+
       for await (const chunk of textStream) {
         onChunk(chunk)
       }
@@ -398,20 +603,27 @@ function createOpenAIImpl(apiKey: string, defaultModel: string): AIProvider {
         onToolError?: (e: { id: string; name: string; error: string }) => void
         onEnd?: (e?: { finalText?: string }) => void
       },
-      model = defaultModel
+      model = defaultModel,
+      history?: ChatTurn[]
     ) {
-      const { textStream } = streamText({
+      const base = {
         model: openai(model),
         system: EXTENSION_BUILDER_PROMPT,
-        prompt,
         tools: buildEventedTools({
           onToolStart: handlers?.onToolStart,
           onToolResult: handlers?.onToolResult,
           onToolError: handlers?.onToolError
         }),
         stopWhen: stepCountIs(5),
-        temperature: 0.7
-      })
+        temperature: 0.7,
+      } as const
+
+      const hasHistory = !!(history && history.length)
+      const req = hasHistory
+        ? { ...base, messages: buildMessages(history, prompt) }
+        : { ...base, prompt }
+
+      const { textStream } = streamText(req as any)
 
       for await (const chunk of textStream) {
         handlers?.onTextDelta?.(chunk)
@@ -428,18 +640,29 @@ function createOpenAIImpl(apiKey: string, defaultModel: string): AIProvider {
 function createAnthropicImpl(apiKey: string, defaultModel: string): AIProvider {
   const anthropic = createAnthropic({ apiKey })
 
+  const buildMessages = (history: ChatTurn[] | undefined, userText: string) => {
+    const msgs = (history && history.length ? history : []).slice()
+    msgs.push({ role: 'user', content: userText })
+    return msgs
+  }
+
   return {
-    async reply(prompt: string, model = defaultModel) {
-      const { text, toolCalls } = await generateText({
+    async reply(prompt: string, model = defaultModel, history?: ChatTurn[]) {
+      const base = {
         model: anthropic(model),
         system: EXTENSION_BUILDER_PROMPT,
-        prompt,
         tools: extensionTools,
-        stopWhen: stepCountIs(5), // ← AI SDK 5: Allow up to 5 tool calling steps
-        temperature: 0.7
-      })
+        stopWhen: stepCountIs(5),
+        temperature: 0.7,
+      } as const
+
+      const hasHistory = !!(history && history.length)
+      const req = hasHistory
+        ? { ...base, messages: buildMessages(history, prompt) }
+        : { ...base, prompt }
+
+      const { text, toolCalls } = await generateText(req as any)
       
-      // Log tool activity for debugging
       if (toolCalls && toolCalls.length > 0) {
         console.log(`✅ Tool calls completed: ${toolCalls.length} calls`)
         console.log('📝 Final text response:', text)
@@ -448,17 +671,22 @@ function createAnthropicImpl(apiKey: string, defaultModel: string): AIProvider {
       return text
     },
 
-    async streamReply(prompt: string, onChunk: (text: string) => void, model = defaultModel) {
-      const { textStream } = streamText({
+    async streamReply(prompt: string, onChunk: (text: string) => void, model = defaultModel, history?: ChatTurn[]) {
+      const base = {
         model: anthropic(model),
         system: EXTENSION_BUILDER_PROMPT,
-        prompt,
         tools: extensionTools,
-        stopWhen: stepCountIs(5), // ← AI SDK 5: Allow up to 5 tool calling steps
-        temperature: 0.7
-      })
+        stopWhen: stepCountIs(5),
+        temperature: 0.7,
+      } as const
 
-      // Stream text parts only
+      const hasHistory = !!(history && history.length)
+      const req = hasHistory
+        ? { ...base, messages: buildMessages(history, prompt) }
+        : { ...base, prompt }
+
+      const { textStream } = streamText(req as any)
+
       for await (const chunk of textStream) {
         onChunk(chunk)
       }
@@ -473,20 +701,27 @@ function createAnthropicImpl(apiKey: string, defaultModel: string): AIProvider {
         onToolError?: (e: { id: string; name: string; error: string }) => void
         onEnd?: (e?: { finalText?: string }) => void
       },
-      model = defaultModel
+      model = defaultModel,
+      history?: ChatTurn[]
     ) {
-      const { textStream } = streamText({
+      const base = {
         model: anthropic(model),
         system: EXTENSION_BUILDER_PROMPT,
-        prompt,
         tools: buildEventedTools({
           onToolStart: handlers?.onToolStart,
           onToolResult: handlers?.onToolResult,
           onToolError: handlers?.onToolError
         }),
         stopWhen: stepCountIs(5),
-        temperature: 0.7
-      })
+        temperature: 0.7,
+      } as const
+
+      const hasHistory = !!(history && history.length)
+      const req = hasHistory
+        ? { ...base, messages: buildMessages(history, prompt) }
+        : { ...base, prompt }
+
+      const { textStream } = streamText(req as any)
 
       for await (const chunk of textStream) {
         handlers?.onTextDelta?.(chunk)
@@ -502,7 +737,7 @@ function createAnthropicImpl(apiKey: string, defaultModel: string): AIProvider {
  */
 function createOllamaImpl(endpoint: string, defaultModel: string): AIProvider {
   return {
-    async reply(prompt: string, model = defaultModel) {
+    async reply(prompt: string, model = defaultModel, _history?: ChatTurn[]) {
       try {
         const response = await fetch(`${endpoint}/api/generate`, {
           method: 'POST',
@@ -520,7 +755,7 @@ function createOllamaImpl(endpoint: string, defaultModel: string): AIProvider {
       }
     },
 
-    async streamReply(prompt: string, onChunk: (text: string) => void, model = defaultModel) {
+    async streamReply(prompt: string, onChunk: (text: string) => void, model = defaultModel, _history?: ChatTurn[]) {
       try {
         const response = await fetch(`${endpoint}/api/generate`, {
           method: 'POST',
@@ -566,7 +801,7 @@ function createOllamaImpl(endpoint: string, defaultModel: string): AIProvider {
  */
 function createMockImpl(): AIProvider {
   return {
-    async reply(prompt: string) {
+    async reply(prompt: string, _model?: string, _history?: ChatTurn[]) {
       await new Promise(resolve => setTimeout(resolve, 500))
       
       // Create a complete extension
@@ -664,20 +899,18 @@ button:hover {
 The extension is ready to load and test!`
     },
 
-    async streamReply(prompt: string, onChunk: (text: string) => void) {
-      // Simulate streaming with tool calls
+    async streamReply(prompt: string, onChunk: (text: string) => void, _model?: string, _history?: ChatTurn[]) {
       const parts = [
         "I'll create a complete extension for you...",
         "\n\nCreating files now...",
         "\n\n**Files Created:**\n"
       ]
-
+    
       for (const part of parts) {
         await new Promise(resolve => setTimeout(resolve, 300))
         onChunk(part)
       }
       
-      // Create files
       fileSystem.createFile('manifest.json', JSON.stringify({
         manifest_version: 3,
         name: "Extension",

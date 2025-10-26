@@ -3,47 +3,86 @@ import { SettingsIcon, KeyIcon, PaletteIcon, MoonIcon, SunIcon, RefreshIcon, Sav
 import { useTheme } from '../hooks/useTheme'
 import Button from '../components/Button'
 import Input from '../components/Input'
-import { AVAILABLE_PROVIDERS, getProviderDisplayName } from '../config/providers'
+import { getProviderDisplayName } from '../config/providers'
+import ProjectToolbar from '../components/ProjectToolbar'
+import FileExplorer from '../components/FileExplorer'
+import CodeEditor from '../components/CodeEditor'
+
+import PreviewRunner from '../components/PreviewRunner'
+import {
+  getActiveProvider,
+  setActiveProvider,
+  getApiKey,
+  setApiKey,
+  type ProviderId
+} from '../providers/aiProvider'
 
 export default function OptionsApp() {
-  const [provider, setProvider] = useState('openai')
-  const [token, setToken] = useState('')
+  const [provider, setProvider] = useState<ProviderId>('openai')
+  const [openaiKey, setOpenaiKey] = useState('')
+  const [anthropicKey, setAnthropicKey] = useState('')
+  const [showOpenAI, setShowOpenAI] = useState(false)
+  const [showAnthropic, setShowAnthropic] = useState(false)
   const [saved, setSaved] = useState(false)
   const [loading, setLoading] = useState(false)
   const { theme, toggleTheme } = useTheme()
 
-  // Load settings from storage
+  // Track initial values to detect changes
+  const [initial, setInitial] = useState<{ provider: ProviderId; openaiKey: string; anthropicKey: string }>({
+    provider: 'openai',
+    openaiKey: '',
+    anthropicKey: ''
+  })
+  const dirty = provider !== initial.provider || openaiKey !== initial.openaiKey || anthropicKey !== initial.anthropicKey
+  const activeKey = provider === 'anthropic' ? anthropicKey : openaiKey
+  const isValid = activeKey.trim().length > 0
+
+  // Load settings from provider layer storage
   useEffect(() => {
-    if (typeof chrome !== 'undefined' && chrome.storage) {
-      chrome.storage.local.get(['provider', 'token'], (res) => {
-        if (res?.provider) setProvider(res.provider)
-        if (res?.token) setToken(res.token)
-      })
-    }
+    (async () => {
+      try {
+        const p = await getActiveProvider()
+        const ok = (await getApiKey('openai')) ?? ''
+        const ak = (await getApiKey('anthropic')) ?? ''
+        setProvider(p)
+        setOpenaiKey(ok)
+        setAnthropicKey(ak)
+        setInitial({ provider: p, openaiKey: ok, anthropicKey: ak })
+      } catch {
+        // ignore - keep defaults
+      }
+    })()
   }, [])
 
   const handleSave = async () => {
     setLoading(true)
-    if (typeof chrome !== 'undefined' && chrome.storage) {
-      chrome.storage.local.set({ provider, token }, () => {
-        setSaved(true)
-        setTimeout(() => setSaved(false), 3000)
-        setLoading(false)
-      })
-    } else {
-      // Dev mode
+    try {
+      await setActiveProvider(provider)
+      await setApiKey('openai', openaiKey || '')
+      await setApiKey('anthropic', anthropicKey || '')
+      setInitial({ provider, openaiKey, anthropicKey })
       setSaved(true)
       setTimeout(() => setSaved(false), 3000)
+    } catch {
+      // keep UI minimal on error
+    } finally {
       setLoading(false)
     }
   }
 
-  const handleReset = () => {
+  const handleReset = async () => {
     if (confirm('Are you sure you want to reset all settings?')) {
-      setProvider('openai')
-      setToken('')
-      if (typeof chrome !== 'undefined' && chrome.storage) {
-        chrome.storage.local.clear()
+      const nextProvider: ProviderId = 'openai'
+      setProvider(nextProvider)
+      setOpenaiKey('')
+      setAnthropicKey('')
+      setInitial({ provider: nextProvider, openaiKey: '', anthropicKey: '' })
+      try {
+        await setActiveProvider(nextProvider)
+        await setApiKey('openai', '')
+        await setApiKey('anthropic', '')
+      } catch {
+        // ignore
       }
     }
   }
@@ -85,6 +124,24 @@ export default function OptionsApp() {
 
       {/* Main Content */}
       <main className="max-w-4xl mx-auto px-6 py-8">
+        <div className="mb-6">
+          <ProjectToolbar />
+        </div>
+
+        {/* Project Workspace: File Explorer + Code Editor */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+          <div className="h-[420px]">
+            <FileExplorer />
+          </div>
+          <div className="h-[420px]">
+            <CodeEditor />
+          </div>
+        </div>
+
+        {/* Live Preview Runner */}
+        <div className="h-[420px] mb-10">
+          <PreviewRunner />
+        </div>
         {/* Success Message */}
         {saved && (
           <div className="mb-6 p-4 bg-green-50 dark:bg-green-950/20 border border-green-200 dark:border-green-900 rounded-xl flex items-center gap-3">
@@ -126,31 +183,60 @@ export default function OptionsApp() {
                 <select
                   id="provider-select"
                   value={provider}
-                  onChange={(e) => setProvider(e.target.value)}
+                  onChange={(e) => {
+                    const v = e.target.value as ProviderId
+                    if (v === 'openai' || v === 'anthropic') setProvider(v)
+                  }}
                   className="w-full px-4 py-2.5 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
                 >
-                  {AVAILABLE_PROVIDERS.map((p) => (
-                    <option key={p} value={p}>
-                      {getProviderDisplayName(p)}
-                    </option>
-                  ))}
+                  <option value="openai">{getProviderDisplayName('openai')}</option>
+                  <option value="anthropic">{getProviderDisplayName('anthropic')}</option>
                 </select>
                 <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
                   Select your AI model provider (OpenAI, Anthropic, etc.)
                 </p>
               </div>
 
-              {/* API Token Input */}
-              <Input
-                label="API Token"
-                type="text"
-                value={token}
-                onChange={(e) => setToken(e.target.value)}
-                placeholder="sk-..."
-                helperText="Enter your API key from your provider's dashboard"
-                fullWidth
-                icon={<KeyIcon className="w-4 h-4" />}
-              />
+              {/* Provider API Keys */}
+              <div className="space-y-4">
+                {/* OpenAI */}
+                <div className="flex items-end gap-2">
+                  <div className="flex-1">
+                    <Input
+                      label="OpenAI API Key"
+                      type={showOpenAI ? 'text' : 'password'}
+                      value={openaiKey}
+                      onChange={(e) => setOpenaiKey(e.target.value)}
+                      placeholder="sk-..."
+                      helperText="Used when OpenAI is the active provider"
+                      fullWidth
+                      icon={<KeyIcon className="w-4 h-4" />}
+                    />
+                  </div>
+                  <Button size="sm" onClick={() => setShowOpenAI(s => !s)}>
+                    {showOpenAI ? 'Hide' : 'Show'}
+                  </Button>
+                </div>
+
+                {/* Anthropic */}
+                <div className="flex items-end gap-2">
+                  <div className="flex-1">
+                    <Input
+                      label="Anthropic API Key"
+                      type={showAnthropic ? 'text' : 'password'}
+                      value={anthropicKey}
+                      onChange={(e) => setAnthropicKey(e.target.value)}
+                      placeholder="anthropic-key-..."
+                      helperText="Used when Anthropic is the active provider"
+                      fullWidth
+                      icon={<KeyIcon className="w-4 h-4" />}
+                    />
+                  </div>
+                  <Button size="sm" onClick={() => setShowAnthropic(s => !s)}>
+                    {showAnthropic ? 'Hide' : 'Show'}
+                  </Button>
+                </div>
+              </div>
 
               <div className="bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-900 rounded-lg p-4">
                 <div className="flex gap-3">
@@ -219,7 +305,7 @@ export default function OptionsApp() {
               size="lg"
               onClick={handleSave}
               loading={loading}
-              disabled={!token.trim()}
+              disabled={!dirty || !isValid}
               fullWidth
               icon={<SaveIcon className="w-4 h-4" />}
             >

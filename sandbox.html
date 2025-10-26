@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Extendy Sandbox</title>
+    <meta name="description" content="Isolated sandbox used to run project previews with relaxed CSP." />
+    <style>
+      html, body { height: 100%; margin: 0; background: #fff; }
+      #root, #runner { width: 100%; height: 100%; border: 0; }
+      .notice { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; padding: 12px; color: #6b7280 }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <div class="notice">Sandbox loading…</div>
+    </div>
+    <script type="module" src="/src/sandbox/main.ts"></script>
+  </body>
+</html>

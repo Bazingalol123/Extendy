@@ -228,7 +228,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { SendIcon, TrashIcon, SparklesIcon } from './Icons'
 import { useAIChat, Message, ToolCall, ToolCallStatus } from '../hooks/useAIChat'
-import { AVAILABLE_PROVIDERS, getProviderDisplayName } from '../config/providers'
+import { getProviderDisplayName } from '../config/providers'
 import EmptyStateWithActions from './EmptyStateWithActions'
 import StatusIndicator from './StatusIndicator'
 import { useTheme } from '../hooks/useTheme'
@@ -242,23 +242,50 @@ interface ChatBoxWithAIProps {
 
 export default function ChatBoxWithAI({ currentProvider, onProviderChange, onOpenSettings }: ChatBoxWithAIProps) {
   const [input, setInput] = useState('')
-  const [apiKey, setApiKey] = useState('')
   const [useStreaming, setUseStreaming] = useState(true)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const { theme } = useTheme()
 
-  // Load API key from storage
-  useEffect(() => {
-    if (typeof chrome !== 'undefined' && chrome.storage) {
-      chrome.storage.local.get(['token'], (res) => setApiKey(res.token || ''))
+  // Local open settings helper
+  const openSettings = () => {
+    if (onOpenSettings) return onOpenSettings()
+    if (typeof chrome !== 'undefined' && chrome.runtime?.openOptionsPage) {
+      chrome.runtime.openOptionsPage()
+    } else {
+      window.open('/options.html', '_blank')
     }
+  }
+
+  // Track active project id and update on FS events
+  const [projectId, setProjectId] = useState<string | null>(() => fileSystem.getActiveProjectId())
+  useEffect(() => {
+    const unsub = fileSystem.subscribe(() => {
+      setProjectId(fileSystem.getActiveProjectId())
+    })
+    // initial sync
+    setProjectId(fileSystem.getActiveProjectId())
+    return unsub
   }, [])
 
-  // Use the AI chat hook with streaming support
-  const { messages, isLoading, streamingMessageId, toolCalls, sendMessage, clearMessages } = useAIChat(
+  // Use the AI chat hook with provider-layer wiring (per-project)
+  const {
+    messages,
+    isLoading,
+    streamingMessageId,
+    toolCalls,
+    sendMessage,
+    clearMessages,
+    clearChat,
+    loadMore,
+    canLoadMore,
+    error,
+    needsKey,
+    isConfigured
+  } = useAIChat(
     currentProvider,
-    apiKey
+    '',
+    projectId
   )
 
   const scrollToBottom = () => {
@@ -291,8 +318,7 @@ export default function ChatBoxWithAI({ currentProvider, onProviderChange, onOpe
     }
   }
 
-  // Check if AI is configured
-  const isConfigured = Boolean(apiKey && apiKey.trim())
+  // Configuration is determined by the provider layer (from hook)
 
   // Helpers for tool-call rendering
   const getStatusStyles = (status: ToolCallStatus) => {
@@ -511,7 +537,7 @@ export default function ChatBoxWithAI({ currentProvider, onProviderChange, onOpe
           {/* Clear Chat Button */}
           {messages.length > 0 && (
             <button
-              onClick={clearMessages}
+              onClick={clearChat}
               className="p-1.5 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
               title="Clear chat"
             >
@@ -523,16 +549,58 @@ export default function ChatBoxWithAI({ currentProvider, onProviderChange, onOpe
 
       {/* MESSAGES AREA */}
       <div className="flex-1 overflow-y-auto px-4 py-4 bg-gray-50 dark:bg-gray-950 relative">
+        {/* Error/Config banner */}
+        {(error || needsKey || !isConfigured) && (
+          <div
+            className={
+              `mb-3 p-3 rounded-md border text-sm flex items-start justify-between gap-3 ` +
+              (needsKey || !isConfigured
+                ? 'bg-amber-50 border-amber-200 text-amber-900 dark:bg-amber-950/20 dark:border-amber-900 dark:text-amber-100'
+                : 'bg-rose-50 border-rose-200 text-rose-900 dark:bg-rose-950/20 dark:border-rose-900 dark:text-rose-100')
+            }
+          >
+            <div>
+              <div className="font-medium">
+                {!isConfigured || needsKey ? 'Provider not configured' : 'Chat error'}
+              </div>
+              <div className="opacity-90">
+                {error?.message || (!isConfigured ? 'Add your API key in Settings to start chatting.' : '')}
+              </div>
+            </div>
+            {(!isConfigured || needsKey) && (
+              <button
+                onClick={openSettings}
+                className="px-2 py-1 text-xs rounded-md bg-blue-600 text-white hover:bg-blue-700"
+              >
+                Open Settings
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Empty State with Animated Background */}
         {messages.length === 0 ? (
           <EmptyStateWithActions
             onQuickAction={handleQuickAction}
             providerName={getProviderDisplayName(currentProvider)}
             isConfigured={isConfigured}
-            onOpenSettings={onOpenSettings}
+            onOpenSettings={openSettings}
           />
         ) : (
           <>
+            {/* Load older segment */}
+            {canLoadMore && (
+              <div className="flex justify-center mb-3">
+                <button
+                  onClick={loadMore}
+                  className="text-xs px-2 py-1 rounded border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800"
+                  title="Load older messages"
+                >
+                  Load older
+                </button>
+              </div>
+            )}
+
             {/* Message List */}
             {messages.map((msg: Message) => (
               <div key={msg.id} className={`flex gap-3 mb-4 message-enter ${msg.sender === 'user' ? 'flex-row-reverse' : ''}`}>
